@@ -68,6 +68,8 @@ class MechanismTests(unittest.TestCase):
             calls.append(args)
             if args == ("shell", "settings", "get", "global", "development_settings_enabled"):
                 return "1"
+            if "resolve-activity" in args:
+                return "com.android.settings/.Settings$DevelopmentSettingsDashboardActivity"
             if args == ("shell", "settings", "get", "global", "adb_enabled"):
                 return "1"
             return ""
@@ -83,6 +85,9 @@ class MechanismTests(unittest.TestCase):
             calls.index(("shell", "settings", "put", "global", "development_settings_enabled", "1")),
             calls.index(("start", "android.settings.APPLICATION_DEVELOPMENT_SETTINGS")),
         )
+        self.assertTrue(any("pm enable --user 0" in " ".join(map(str,args)) for args in calls))
+        self.assertLess(next(i for i,args in enumerate(calls) if "pm enable --user 0" in " ".join(map(str,args))),
+                        calls.index(("start", "android.settings.APPLICATION_DEVELOPMENT_SETTINGS")))
 
     def test_real_baseline(self):
         root = ROOT/"evidence/42400869470-1"
@@ -109,6 +114,20 @@ class MechanismTests(unittest.TestCase):
         ns = list(root.iter())
         self.assertIsNotNone(m.switch_condition("microphone access",False)(ns))
         self.assertIsNone(m.switch_condition("microphone access",True)(ns))
+
+    def test_google_privacy_controls_switch(self):
+        owner = "com.google.android.permissioncontroller"
+        root = node(owner)
+        camera = node(owner)
+        camera.extend([node(owner,"Camera access"), node(owner,checkable="true",checked="true")])
+        microphone = node(owner)
+        microphone.extend([node(owner,"Microphone access"), node(owner,checkable="true",checked="true")])
+        root.extend([camera,microphone])
+        ns = list(root.iter())
+        row = m.switch_row(ns,"microphone access",m.PRIVACY_SETTINGS)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[1].get("checked"),"true")
+        self.assertIsNone(m.switch_row(ns,"microphone access"))
 
     def test_unknown_sources_not_signature_failure(self):
         owner = "com.google.android.packageinstaller"
