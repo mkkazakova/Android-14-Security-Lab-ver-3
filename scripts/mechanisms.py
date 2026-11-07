@@ -607,31 +607,114 @@ def find_settings_label(folder, text, *, max_swipes=12):
     )
 
 
-def activate_developer_options(folder):
-    """Enable Developer options through About phone > Build number.
 
-    Merely writing development_settings_enabled=1 does not necessarily enable
-    the actual Settings activity on the Android 14 emulator.
-    """
+def activate_developer_options(folder):
+    """Activate Developer options through Build number."""
+
+    folder.mkdir(parents=True, exist_ok=True)
     start("android.settings.DEVICE_INFO_SETTINGS")
-    build = find_settings_label(folder, "build number")
-    for _ in range(7):
-        tap(build)
-        time.sleep(0.35)
+    time.sleep(2)
+
+    # First try the usual UI Automator search.
+    try:
+        build = find_settings_label(
+            folder,
+            "build number",
+            max_swipes=2
+        )
+    except TimeoutError:
+        build = None
+
+    if build is not None:
+        for _ in range(7):
+            tap(build)
+            time.sleep(0.35)
+
+    else:
+        # Fallback for the confirmed API 34 emulator.
+        display = adb("shell", "wm", "size")
+        matches = re.findall(
+            r"(\d+)x(\d+)", display
+        )
+
+        if not matches:
+            raise RuntimeError(
+                "Не удалось определить размер экрана: "
+                + display
+            )
+
+        width, height = map(int, matches[-1])
+
+        if (width, height) != (1080, 1920):
+            raise RuntimeError(
+                "Координаты Build number проверены "
+                "только для экрана 1080x1920"
+            )
+
+        # Scroll to the bottom of About emulated device.
+        for _ in range(3):
+            adb(
+                "shell", "input", "swipe",
+                str(int(width * 0.70)),
+                str(int(height * 0.84)),
+                str(int(width * 0.70)),
+                str(int(height * 0.22)),
+                "420"
+            )
+            time.sleep(0.7)
+
+        # Save a genuine screenshot before tapping.
+        picture = adb(
+            "exec-out", "screencap", "-p",
+            binary=True
+        )
+
+        if not picture.startswith(
+            b"\x89PNG\r\n\x1a\n"
+        ):
+            raise RuntimeError(
+                "Не удалось сохранить диагностический PNG"
+            )
+
+        (
+            folder / "build-number-before-taps.png"
+        ).write_bytes(picture)
+
+        # Coordinates grounded in the previous AVD screenshots.
+        x = int(width * 0.25)
+        y = int(height * 0.76)
+
+        for _ in range(7):
+            adb(
+                "shell", "input", "tap",
+                str(x), str(y)
+            )
+            time.sleep(0.35)
+
+    # Independent verification of activation.
     for _ in range(12):
         enabled = adb(
-            "shell", "settings", "get", "global",
-            "development_settings_enabled"
+            "shell", "settings", "get",
+            "global", "development_settings_enabled"
         )
+
         if enabled == "1":
-            (folder / "developer-activation.txt").write_text(
-                "Developer options activated through Build number\n"
+            (
+                folder / "developer-activation.txt"
+            ).write_text(
+                "Developer options enabled through "
+                "Build number\n",
+                encoding="utf-8"
             )
             return
+
         time.sleep(0.5)
+
     raise RuntimeError(
-        "После семи нажатий Build number параметры разработчика не активированы"
+        "Параметры разработчика не активированы. "
+        "Проверь build-number-before-taps.png."
     )
+
 
 
 def open_developer_options(folder):
