@@ -682,7 +682,7 @@ def activate_developer_options(folder):
 
         # Coordinates grounded in the previous AVD screenshots.
         x = int(width * 0.25)
-        y = int(height * 0.76)
+        y = int(height * 0.90)
 
         for _ in range(7):
             adb(
