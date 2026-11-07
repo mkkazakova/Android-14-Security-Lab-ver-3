@@ -1,0 +1,107 @@
+{
+  "status": "PASS",
+  "run_id": "42400869470",
+  "attempt": "1",
+  "commit": "00d0c4e896dc1b5928b2ab168c647000bf70e367",
+  "experiments": [
+    {
+      "id": "1.1",
+      "apk": "sample-v1-a.apk",
+      "expected": "Пакет отсутствует. Открыть первую версию и подтвердить установку.",
+      "status": "PASS",
+      "reason": null,
+      "technical": "Подтверждено; versionCode=1.",
+      "installer": {
+        "state": "success",
+        "message": "App installed.",
+        "package": "com.google.android.packageinstaller"
+      },
+      "screenshot": "1.1/result.png",
+      "png_valid": true,
+      "input": {
+        "package": "ru.securitylab.sample",
+        "version": 1,
+        "certificate_sha256": "6f5ca919ff637610ceb5e6c3e8f6cb004b3cd7b729deb3505fc08189937bb87c",
+        "apk_sha256": "310490186867f1bd9d52ca2033ba299c850e3d5e26b90a3a828f8653a6980537"
+      },
+      "before": {
+        "version": null,
+        "sha256": null
+      },
+      "png_sha256": "d8b4f44d2fc5876697d42f7d8e80d2ad7cdb1f9edf74e2ebe59a30fe6ee74fb0",
+      "capture_source": "adb exec-out screencap -p",
+      "after": {
+        "version": 1,
+        "sha256": "310490186867f1bd9d52ca2033ba299c850e3d5e26b90a3a828f8653a6980537"
+      },
+      "signature_error": null,
+      "technical_verified": true
+    },
+    {
+      "id": "1.2",
+      "apk": "sample-v2-b.apk",
+      "expected": "Поверх версии 1 предложить версию 2 с независимой подписью. Ожидается отказ с сохранением версии 1.",
+      "status": "PASS",
+      "reason": null,
+      "technical": "Подтверждено; versionCode=1.",
+      "installer": {
+        "state": "failure",
+        "message": "App not installed as package conflicts with an existing package.",
+        "package": "com.google.android.packageinstaller"
+      },
+      "screenshot": "1.2/result.png",
+      "png_valid": true,
+      "input": {
+        "package": "ru.securitylab.sample",
+        "version": 2,
+        "certificate_sha256": "789bc55715f5138d4fe0c6cd9f11b51ee386fa3bd352222e83a647859c122025",
+        "apk_sha256": "0f66ade189053bc6ab27427c691031dd07f96b93202d8c32d18d7335c20c7aae"
+      },
+      "before": {
+        "version": 1,
+        "sha256": "310490186867f1bd9d52ca2033ba299c850e3d5e26b90a3a828f8653a6980537"
+      },
+      "png_sha256": "b3113a6f6e076fe0baa5855f68657f113074f81eea0dd50cc8ee55a7d29cdfe3",
+      "capture_source": "adb exec-out screencap -p",
+      "after": {
+        "version": 1,
+        "sha256": "310490186867f1bd9d52ca2033ba299c850e3d5e26b90a3a828f8653a6980537"
+      },
+      "signature_error": "11-07 18:23:48.840   520   572 W PackageManager: Existing package ru.securitylab.sample signatures do not match newer version; ignoring!",
+      "technical_verified": true
+    },
+    {
+      "id": "1.3",
+      "apk": "sample-v2-a.apk",
+      "expected": "Поверх версии 1 предложить версию 2 с исходной подписью. Ожидается успешное обновление.",
+      "status": "PASS",
+      "reason": null,
+      "technical": "Подтверждено; versionCode=2.",
+      "installer": {
+        "state": "success",
+        "message": "App installed.",
+        "package": "com.google.android.packageinstaller"
+      },
+      "screenshot": "1.3/result.png",
+      "png_valid": true,
+      "input": {
+        "package": "ru.securitylab.sample",
+        "version": 2,
+        "certificate_sha256": "6f5ca919ff637610ceb5e6c3e8f6cb004b3cd7b729deb3505fc08189937bb87c",
+        "apk_sha256": "f049f6a13d570970606f188d812be0daac9342f780dbda48760cd58a8cfb207e"
+      },
+      "before": {
+        "version": 1,
+        "sha256": "310490186867f1bd9d52ca2033ba299c850e3d5e26b90a3a828f8653a6980537"
+      },
+      "png_sha256": "42d070a95787d7b1b6a85d9c803d5518fab171e19fbdc2b4b83df66749e12577",
+      "capture_source": "adb exec-out screencap -p",
+      "after": {
+        "version": 2,
+        "sha256": "f049f6a13d570970606f188d812be0daac9342f780dbda48760cd58a8cfb207e"
+      },
+      "signature_error": null,
+      "technical_verified": true
+    }
+  ]
+}
