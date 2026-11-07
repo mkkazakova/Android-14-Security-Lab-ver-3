@@ -17,6 +17,7 @@ from report import OUT
 from run import diagnose, installed, push_download_apk, ready_device
 
 SETTINGS = {"com.android.settings"}
+PRIVACY_SETTINGS = {"com.android.settings", "com.android.permissioncontroller", "com.google.android.permissioncontroller"}
 RECORDER = "org.fossify.voicerecorder"
 MANAGER = "org.fossify.filemanager"
 APK = "sample-v1-a.apk"
@@ -32,15 +33,21 @@ def text_node(nodes, owners, test):
     return next((n for n in nodes if n.get("package") in owners and test(n.get("text", "").casefold())), None)
 
 
-def switch_row(nodes, title):
-    """Find the switch in the smallest Settings preference containing this exact label."""
-    label = text_node(nodes, SETTINGS, lambda s: s == title)
+def switch_row(nodes, title, owners=None):
+    """Find the switch inside the preference with this label.
+
+    Pixel Android 14 hosts Privacy Controls in PermissionController rather
+    than in the Settings app, so callers must select the expected owners.
+    """
+    owners = SETTINGS if owners is None else owners
+    label = text_node(nodes, owners, lambda value: value == title)
     if label is None:
         return None
     for row in reversed(nodes):
         if label not in row.iter():
             continue
-        controls = [n for n in row.iter() if n.get("package") in SETTINGS and n.get("checkable") == "true"]
+        controls = [n for n in row.iter()
+                    if n.get("package") in owners and n.get("checkable") == "true"]
         if len(controls) == 1:
             return label, controls[0]
         if len(controls) > 1:
@@ -48,9 +55,9 @@ def switch_row(nodes, title):
     return None
 
 
-def switch_condition(title, checked):
+def switch_condition(title, checked, owners=None):
     def match(nodes):
-        row = switch_row(nodes, title)
+        row = switch_row(nodes, title, owners)
         if row and row[1].get("checked") == str(checked).lower():
             return row[0]
         return None
@@ -259,11 +266,12 @@ def swipe_up():
     adb("shell","input","swipe",str(width//2),str(height*4//5),str(width//2),str(height//3),"410")
 
 
-def seek_setting(folder,title):
-    wait(folder,lambda ns: next((n for n in ns if n.get("package") in SETTINGS),None),"settings-ready")
+def seek_setting(folder,title,owners=None):
+    owners = SETTINGS if owners is None else owners
+    wait(folder,lambda ns: next((n for n in ns if n.get("package") in owners),None),"settings-ready")
     for _ in range(12):
         nodes = snapshot(folder)
-        row = switch_row(nodes,title)
+        row = switch_row(nodes,title,owners)
         if row:
             return row
         swipe_up()
@@ -417,10 +425,10 @@ def microphone_case(folder,r):
     if not re.search(r"android.permission.RECORD_AUDIO: granted=true",grants):
         raise RuntimeError("Runtime microphone permission was not granted")
     start("android.settings.PRIVACY_CONTROLS")
-    _,control = seek_setting(folder,"microphone access")
+    _,control = seek_setting(folder,"microphone access",PRIVACY_SETTINGS)
     if control.get("checked") == "true":
         tap(control)
-    off = switch_condition("microphone access",False)
+    off = switch_condition("microphone access",False,PRIVACY_SETTINGS)
     wait(folder,off,"global-off")
     (folder/"sensor-before.txt").write_text(adb("shell","dumpsys","sensor_privacy"))
     r["technical"] = dict(release=release, runtime_permission=True, microphone_access=False)
@@ -447,7 +455,7 @@ def microphone_case(folder,r):
             if not recent_audio_op(audio,elapsed):
                 raise RuntimeError("Нет свежего AppOps-события RECORD_AUDIO диктофона")
             start("android.settings.PRIVACY_CONTROLS")
-            seek_setting(folder,"microphone access")
+            seek_setting(folder,"microphone access",PRIVACY_SETTINGS)
             wait(folder,off,"global-still-off")
             r["technical"].update(audio_op=audio, seconds_since_tap=elapsed, microphone_still_disabled=True)
             return
@@ -465,11 +473,20 @@ def microphone_case(folder,r):
 
 
 def usb_case(folder,r):
-    # API 34 opens DevelopmentSettingsDisabledActivity when this flag is off.
+    # On the API 34 image the real Developer options Activity can be disabled
+    # independently from Settings.Global.DEVELOPMENT_SETTINGS_ENABLED.
     adb("shell", "settings", "put", "global", "development_settings_enabled", "1")
     enabled = adb("shell", "settings", "get", "global", "development_settings_enabled")
     if enabled != "1":
         raise RuntimeError("Cannot enable Developer options on this emulator")
+    component = "com.android.settings/.Settings$DevelopmentSettingsDashboardActivity"
+    enable_result = adb("shell", "pm enable --user 0 '" + component + "'")
+    (folder / "developer-component.txt").write_text(enable_result)
+    resolution = adb("shell", "cmd", "package", "resolve-activity", "--brief",
+                     "-a", "android.settings.APPLICATION_DEVELOPMENT_SETTINGS")
+    (folder / "developer-resolution.txt").write_text(resolution)
+    if "DevelopmentSettingsDashboardActivity" not in resolution or "DevelopmentSettingsDisabledActivity" in resolution:
+        raise RuntimeError("Developer options still resolve to a disabled Activity: " + resolution)
     adb("shell", "am", "force-stop", "com.android.settings")
     start("android.settings.APPLICATION_DEVELOPMENT_SETTINGS")
     _,control = seek_setting(folder,"usb debugging")
