@@ -4,12 +4,64 @@ import json
 import re
 import time
 from subprocess import TimeoutExpired
+from pathlib import Path
 
 from gui import FILES, adb, capture, install, snapshot, wait
 from inspect_apks import INPUTS, PACKAGE
 from report import CASES, OUT, initial, save
 
 REMOTE = "/sdcard/Download"
+
+
+def push_download_apk(apk, attempts=24, pause=4):
+    """Wait until shared storage is writable, then push and verify an APK.
+
+    Android can report boot_completed before emulated shared storage is ready.
+    Only the real Download directory is used; Package Installer must access it.
+    """
+    apk = Path(apk)
+    remote = f"{REMOTE}/{apk.name}"
+    expected = hashlib.sha256(apk.read_bytes()).hexdigest()
+    errors = []
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    for index in range(1, attempts + 1):
+        try:
+            # A successful mkdir alone does not prove the FUSE volume is writable.
+            adb(
+                "shell", "sh", "-c",
+                "set -e; mkdir -p /sdcard/Download; "
+                "printf ready > /sdcard/Download/.signature-lab-probe; "
+                "rm /sdcard/Download/.signature-lab-probe",
+                timeout=15,
+            )
+            adb("push", str(apk), remote, timeout=60)
+            actual = adb("shell", "sha256sum", remote, timeout=15).split()[0]
+            if actual != expected:
+                raise RuntimeError(f"SHA-256 mismatch: {actual} != {expected}")
+            return remote
+        except (RuntimeError, TimeoutExpired, IndexError) as exc:
+            errors.append(f"attempt {index}: {exc}")
+            if index < attempts:
+                time.sleep(pause)
+
+    diagnostics = []
+    for name, command in (
+        ("user", ("shell", "cmd", "user", "is-user-unlocked", "0")),
+        ("volumes", ("shell", "sm", "list-volumes", "all")),
+        ("permissions", ("shell", "ls", "-ld", "/sdcard", REMOTE)),
+    ):
+        try:
+            diagnostics.append(f"{name}: {adb(*command)}")
+        except (RuntimeError, TimeoutExpired) as exc:
+            diagnostics.append(f"{name}: {exc}")
+    (OUT / f"storage-{apk.name}.txt").write_text(
+        "\n".join(errors[-12:] + diagnostics), encoding="utf-8"
+    )
+    raise RuntimeError(
+        f"Cannot stage {apk.name} in {REMOTE} after {attempts} attempts. "
+        f"See results/storage-{apk.name}.txt. Last error: {errors[-1]}"
+    )
 
 
 def ready_device():
@@ -57,17 +109,8 @@ def ready():
             adb("shell", "appops", "get", p, "REQUEST_INSTALL_PACKAGES")
         )
 
-    adb("shell", "mkdir", "-p", REMOTE)
-
     for _, filename, *_ in CASES:
-        remote = f"{REMOTE}/{filename}"
-        apk = INPUTS / filename
-        adb("push", str(apk), remote)
-
-        if adb("shell", "sha256sum", remote).split()[0] != hashlib.sha256(
-            apk.read_bytes()
-        ).hexdigest():
-            raise ValueError("Device input differs: " + filename)
+        push_download_apk(INPUTS / filename)
 
     return files
 
