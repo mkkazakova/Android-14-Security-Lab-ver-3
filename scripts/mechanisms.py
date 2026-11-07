@@ -519,12 +519,14 @@ def microphone_case(folder,r):
     raise RuntimeError(" / ".join(errors))
 
 
-def find_settings_label(folder, text, *, max_swipes=15):
-    """Find a Settings label, tolerating malformed or temporarily empty UI XML."""
+def find_settings_label(folder, text, *, max_swipes=18):
+    """Search for a real Settings label with UI retries and alternate scrolling."""
     expected = text.casefold().strip()
+    errors = []
+
     for index in range(max_swipes):
         try:
-            return wait(
+            found = wait(
                 folder,
                 lambda ns: text_node(
                     ns,
@@ -532,14 +534,56 @@ def find_settings_label(folder, text, *, max_swipes=15):
                     lambda value: value.strip() == expected,
                 ),
                 f"find-setting-{index}",
-                seconds=5,
+                seconds=4,
             )
-        except TimeoutError:
-            if index == max_swipes - 1:
-                break
+            if found is not None:
+                return found
+        except TimeoutError as exc:
+            errors.append(str(exc))
+
+        if index == max_swipes - 1:
+            break
+
+        if index % 4 == 0:
             swipe_up()
-            time.sleep(0.5)
-    raise TimeoutError("Не найден пункт настроек: " + text)
+        elif index % 4 == 1:
+            adb("shell", "input", "keyevent", "KEYCODE_MOVE_END")
+        elif index % 4 == 2:
+            adb("shell", "input", "keyevent", "KEYCODE_PAGE_DOWN")
+        else:
+            size = adb("shell", "wm", "size")
+            width, height = map(
+                int, re.findall(r"(\d+)x(\d+)", size)[-1]
+            )
+            adb(
+                "shell", "input", "swipe",
+                str(width // 2),
+                str(height * 85 // 100),
+                str(width // 2),
+                str(height * 20 // 100),
+                "300",
+            )
+        time.sleep(0.7)
+
+    try:
+        nodes = snapshot(folder)
+        visible = [
+            n.get("text") for n in nodes
+            if n.get("package") in SETTINGS and n.get("text")
+        ]
+        (folder / "settings-search-failed.txt").write_text(
+            "Искомый пункт: " + text + "\n\n"
+            + "Видимые элементы:\n" + "\n".join(visible),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        errors.append(str(exc))
+
+    raise TimeoutError(
+        "Не найден пункт настроек: " + text
+        + ". Последняя ошибка: "
+        + (errors[-1] if errors else "пункт отсутствует")
+    )
 
 
 def activate_developer_options(folder):
