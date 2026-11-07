@@ -1,3 +1,4 @@
+
 """Replay the baseline and exercise the pass/fail boundary without an emulator."""
 import hashlib
 import json
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/"scripts"))
 import gui
 import mechanisms as m
+import run
 
 
 def node(owner,text="",**kw):
@@ -19,6 +21,69 @@ def node(owner,text="",**kw):
 
 
 class MechanismTests(unittest.TestCase):
+    def test_storage_retry_checks_hash(self):
+        digest = hashlib.sha256(b"fixture-apk").hexdigest()
+        counter = {"push": 0}
+
+        def fake_adb(*args, **kwargs):
+            if args[0] == "push":
+                counter["push"] += 1
+                if counter["push"] == 1:
+                    raise RuntimeError("remote couldn't create file: Operation not permitted")
+            if args[:2] == ("shell", "sha256sum"):
+                return digest + "  /sdcard/Download/sample.apk"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            apk = root / "sample.apk"
+            apk.write_bytes(b"fixture-apk")
+            with patch.object(run, "OUT", root), patch.object(run, "adb", side_effect=fake_adb):
+                remote = run.push_download_apk(apk, attempts=2, pause=0)
+
+        self.assertEqual(remote, "/sdcard/Download/sample.apk")
+        self.assertEqual(counter["push"], 2)
+
+    def test_recorder_uses_resolved_component(self):
+        calls = []
+
+        def fake_adb(*args, **kwargs):
+            calls.append(args)
+            if "resolve-activity" in args:
+                return "priority=0\norg.fossify.voicerecorder/.activities.MainActivity"
+            return "Starting: Intent"
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(m, "adb", side_effect=fake_adb), \
+                patch.object(m, "wait", return_value=("ready", node(m.RECORDER))):
+            m.launch_recorder(Path(tmp))
+
+        self.assertTrue(any(args[:4] == ("shell", "am", "start", "-n") for args in calls))
+        self.assertFalse(any("monkey" in args for args in calls))
+
+    def test_usb_enables_developer_options_before_screen(self):
+        calls = []
+
+        def fake_adb(*args, **kwargs):
+            calls.append(args)
+            if args == ("shell", "settings", "get", "global", "development_settings_enabled"):
+                return "1"
+            if args == ("shell", "settings", "get", "global", "adb_enabled"):
+                return "1"
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(m, "adb", side_effect=fake_adb), \
+                patch.object(m, "start", side_effect=lambda *a: calls.append(("start", *a))), \
+                patch.object(m, "seek_setting", return_value=(node("com.android.settings"), node("com.android.settings", checked="true"))), \
+                patch.object(m, "evidence"):
+            m.usb_case(Path(tmp), {"technical": {}, "images": []})
+
+        self.assertLess(
+            calls.index(("shell", "settings", "put", "global", "development_settings_enabled", "1")),
+            calls.index(("start", "android.settings.APPLICATION_DEVELOPMENT_SETTINGS")),
+        )
+
     def test_real_baseline(self):
         root = ROOT/"evidence/42400869470-1"
         report = json.loads((root/"report.json").read_text())
