@@ -1,4 +1,3 @@
-
 """System-only visual evidence for the isolated experiments on an English API 34 AVD."""
 import argparse
 import hashlib
@@ -519,70 +518,92 @@ def microphone_case(folder,r):
     raise RuntimeError(" / ".join(errors))
 
 
-def find_settings_label(folder, text, *, max_swipes=18):
-    """Search for a real Settings label with UI retries and alternate scrolling."""
-    expected = text.casefold().strip()
-    errors = []
+def find_settings_label(folder, text, *, max_swipes=12):
+    """Find a Settings item by scrolling the actual RecyclerView.
 
-    for index in range(max_swipes):
+    Every step is recorded as diagnostic XML, visible labels and a raw screenshot.
+    No screenshot is accepted as experimental evidence by this helper.
+    """
+    import xml.etree.ElementTree as ET
+
+    expected = text.casefold().strip()
+    folder.mkdir(parents=True, exist_ok=True)
+    history = []
+
+    for index in range(max_swipes + 1):
+        name = f"settings-search-{index:02d}"
         try:
-            found = wait(
+            return wait(
                 folder,
-                lambda ns: text_node(
-                    ns,
-                    SETTINGS,
+                lambda nodes: text_node(
+                    nodes, SETTINGS,
                     lambda value: value.strip() == expected,
                 ),
-                f"find-setting-{index}",
-                seconds=4,
+                name,
+                seconds=6,
             )
-            if found is not None:
-                return found
         except TimeoutError as exc:
-            errors.append(str(exc))
+            history.append(f"{name}: {exc}")
 
-        if index == max_swipes - 1:
+        scroller = None
+        last_xml = folder / "latest.xml"
+        if last_xml.exists():
+            try:
+                nodes = list(ET.parse(last_xml).iter("node"))
+                (folder / f"{name}.xml").write_bytes(last_xml.read_bytes())
+                visible = [
+                    n.get("text", "") for n in nodes
+                    if n.get("package") in SETTINGS and n.get("text")
+                ]
+                (folder / f"{name}.txt").write_text(
+                    "\n".join(visible), encoding="utf-8"
+                )
+                scroller = next(
+                    (n for n in nodes
+                     if n.get("package") in SETTINGS
+                     and n.get("scrollable") == "true"
+                     and n.get("resource-id", "").endswith("/recycler_view")),
+                    None,
+                )
+                if scroller is None:
+                    scroller = next(
+                        (n for n in nodes
+                         if n.get("package") in SETTINGS
+                         and n.get("scrollable") == "true"),
+                        None,
+                    )
+            except (ET.ParseError, OSError) as exc:
+                history.append(f"{name} XML: {exc}")
+
+        # Preserve screen evidence even when UI Automator cannot return XML.
+        try:
+            picture = adb("exec-out", "screencap", "-p", binary=True, timeout=15)
+            if picture.startswith(b"\x89PNG\r\n\x1a\n"):
+                (folder / f"{name}.png").write_bytes(picture)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+            history.append(f"{name} PNG: {exc}")
+
+        if index == max_swipes:
             break
 
-        if index % 4 == 0:
-            swipe_up()
-        elif index % 4 == 1:
-            adb("shell", "input", "keyevent", "KEYCODE_MOVE_END")
-        elif index % 4 == 2:
-            adb("shell", "input", "keyevent", "KEYCODE_PAGE_DOWN")
+        if scroller is not None:
+            left, top, right, bottom = bounds(scroller)
+            width, height = right - left, bottom - top
+            x = left + int(width * 0.70)
+            y_start = top + int(height * 0.85)
+            y_end = top + int(height * 0.20)
+            adb("shell", "input", "swipe", str(x), str(y_start),
+                str(x), str(y_end), "420")
         else:
-            size = adb("shell", "wm", "size")
-            width, height = map(
-                int, re.findall(r"(\d+)x(\d+)", size)[-1]
-            )
-            adb(
-                "shell", "input", "swipe",
-                str(width // 2),
-                str(height * 85 // 100),
-                str(width // 2),
-                str(height * 20 // 100),
-                "300",
-            )
-        time.sleep(0.7)
+            swipe_up()
+        time.sleep(1.0)
 
-    try:
-        nodes = snapshot(folder)
-        visible = [
-            n.get("text") for n in nodes
-            if n.get("package") in SETTINGS and n.get("text")
-        ]
-        (folder / "settings-search-failed.txt").write_text(
-            "Искомый пункт: " + text + "\n\n"
-            + "Видимые элементы:\n" + "\n".join(visible),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        errors.append(str(exc))
-
+    (folder / "settings-search-history.txt").write_text(
+        "\n".join(history), encoding="utf-8"
+    )
     raise TimeoutError(
-        "Не найден пункт настроек: " + text
-        + ". Последняя ошибка: "
-        + (errors[-1] if errors else "пункт отсутствует")
+        f"Не найден пункт настроек: {text}. "
+        f"Сохранены снимки settings-search-*.png и XML для диагностики."
     )
 
 
