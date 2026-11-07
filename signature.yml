@@ -1,0 +1,106 @@
+name: Android 14 Security Lab
+on:
+  workflow_dispatch:
+    inputs:
+      mechanism:
+        description: Выберите механизм
+        type: choice
+        required: true
+        default: all
+        options: [all, signature, source, microphone, usb]
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: API 34 · ${{ matrix.mechanism }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mechanism: ${{ fromJSON(inputs.mechanism == 'all' && '["signature","source","microphone","usb"]' || format('["{0}"]', inputs.mechanism)) }}
+    env:
+      MECHANISM: ${{ matrix.mechanism }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 42
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: android-actions/setup-android@v4
+      - name: Проверить входные APK и сценарий
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          pip install -r requirements.txt
+          sdkmanager 'build-tools;35.0.0' 'platform-tools'
+          python -m unittest discover -s tests -v
+          python scripts/inspect_apks.py 2>&1 | tee results/verify.log
+      - name: Разрешить доступ к KVM
+        id: kvm
+        run: |
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Эксперимент Android 14
+        id: avd
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 2048M
+          disk-size: 4096M
+          force-avd-creation: true
+          emulator-options: -no-window -gpu swiftshader ${{ matrix.mechanism != 'microphone' && '-noaudio' || '' }} -no-boot-anim -no-snapshot -camera-back none -camera-front none
+          script: ${{ matrix.mechanism == 'signature' && 'python scripts/run.py' || format('python scripts/mechanisms.py {0}', matrix.mechanism) }}
+      - name: Сформировать отчёт при сбое инфраструктуры
+        if: always()
+        run: |
+          reason='Проверка APK — ${{ steps.verify.outcome }}. KVM — ${{ steps.kvm.outcome }}. Эмулятор — ${{ steps.avd.outcome }}.'
+          if [ "$MECHANISM" = signature ]; then
+            python scripts/report.py "$reason"
+          else
+            python scripts/infra_report.py "$MECHANISM" "$reason"
+          fi
+          cat results/README.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Сохранить отчёт и диагностику
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android14-${{ matrix.mechanism }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    name: Сводный отчёт
+    needs: experiment
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: android14-*-${{ github.run_id }}-*
+          path: collected
+      - name: Собрать иллюстрированный отчёт
+        if: always()
+        env:
+          SELECTION: ${{ inputs.mechanism }}
+        run: python3 scripts/combined.py "$SELECTION" "$GITHUB_RUN_ID"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-android14-${{ github.run_id }}-${{ github.run_attempt }}
+          path: combined/
+          if-no-files-found: error
+          retention-days: 14
