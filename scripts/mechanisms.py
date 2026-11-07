@@ -1,3 +1,4 @@
+
 """System-only visual evidence for the isolated experiments on an English API 34 AVD."""
 import argparse
 import hashlib
@@ -13,7 +14,7 @@ from urllib.request import urlopen
 from gui import FILES, INSTALLERS, adb, bounds, check_png, find, open_apk, snapshot, tap, wait
 from inspect_apks import PACKAGE
 from report import OUT
-from run import diagnose, installed, ready_device
+from run import diagnose, installed, push_download_apk, ready_device
 
 SETTINGS = {"com.android.settings"}
 RECORDER = "org.fossify.voicerecorder"
@@ -165,11 +166,9 @@ def source_case(folder, r):
     records = json.loads((OUT/"verified.json").read_text())
     if sample_state(folder, "before")["version"] is not None:
         raise RuntimeError("Пакет уже установлен до опыта")
-    remote = "/sdcard/Download/"+APK
-    adb("shell","mkdir","-p","/sdcard/Download")
-    adb("push", "apks/"+APK, remote)
-    if adb("shell","sha256sum",remote).split()[0] != records[APK]["apk_sha256"]:
-        raise ValueError("Device APK differs from verified input")
+    if hashlib.sha256((Path("apks") / APK).read_bytes()).hexdigest() != records[APK]["apk_sha256"]:
+        raise ValueError("Local APK differs from verified input")
+    push_download_apk(Path("apks") / APK)
     system = adb("shell","pm","list","packages","-s").splitlines()
     files = next((p for p in sorted(FILES) if "package:"+p in system), None)
     candidates = [p for p in (files, MANAGER) if p]
@@ -316,9 +315,75 @@ def recorder_screen(ns):
 
 
 def launch_recorder(folder):
-    start("android.intent.action.MAIN","-c","android.intent.category.LAUNCHER","-p",RECORDER)
+    """Launch the recorder and verify that its real UI becomes visible.
+
+    The implicit MAIN/LAUNCHER intent with -p returned result code -91 on API 34.
+    Resolve an explicit activity; otherwise try monkey, then the Launcher icon.
+    """
+    errors = []
+    resolution = ""
+    try:
+        resolution = adb(
+            "shell", "cmd", "package", "resolve-activity", "--brief", "--user", "0",
+            "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.LAUNCHER", "-p", RECORDER,
+            timeout=15,
+        )
+        (folder / "recorder-resolution.txt").write_text(resolution)
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"resolve-activity: {exc}")
+
+    components = re.findall(
+        r"(?m)^\s*(" + re.escape(RECORDER) + r"/[A-Za-z0-9_.$]+)\s*$", resolution
+    )
+
+    def first_screen(tag):
+        return wait(folder, recorder_screen, tag, 15)
+
+    action_button = None
+    if components:
+        try:
+            adb("shell", "am", "start", "-n", components[-1], timeout=20)
+            action_button = first_screen("recorder-explicit")
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"explicit: {exc}")
+
+    if action_button is None:
+        try:
+            output = adb(
+                "shell", "monkey", "-p", RECORDER,
+                "-c", "android.intent.category.LAUNCHER", "1", timeout=20,
+            )
+            (folder / "recorder-monkey.txt").write_text(output)
+            if "No activities found" in output:
+                raise RuntimeError(output)
+            action_button = first_screen("recorder-monkey")
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"monkey: {exc}")
+
+    if action_button is None:
+        try:
+            home(folder)
+            icon = wait(
+                folder,
+                lambda ns: next(
+                    (n for n in ns if "launcher" in n.get("package", "")
+                     and n.get("text", "").casefold() == "voice recorder"), None
+                ),
+                "recorder-launcher-icon", 15,
+            )
+            tap(icon)
+            action_button = first_screen("recorder-launcher")
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"launcher icon: {exc}")
+
+    if action_button is None:
+        raise RuntimeError("Recorder did not open: " + " / ".join(errors))
+
     for index in range(12):
-        action,button = wait(folder,recorder_screen,f"recorder-{index}",38)
+        action, button = action_button if index == 0 else wait(
+            folder, recorder_screen, f"recorder-{index}", 38
+        )
         if action == "ready":
             return button
         tap(button)
@@ -400,6 +465,12 @@ def microphone_case(folder,r):
 
 
 def usb_case(folder,r):
+    # API 34 opens DevelopmentSettingsDisabledActivity when this flag is off.
+    adb("shell", "settings", "put", "global", "development_settings_enabled", "1")
+    enabled = adb("shell", "settings", "get", "global", "development_settings_enabled")
+    if enabled != "1":
+        raise RuntimeError("Cannot enable Developer options on this emulator")
+    adb("shell", "am", "force-stop", "com.android.settings")
     start("android.settings.APPLICATION_DEVELOPMENT_SETTINGS")
     _,control = seek_setting(folder,"usb debugging")
     value = adb("shell","settings","get","global","adb_enabled")
